@@ -1,201 +1,215 @@
 import streamlit as st
 import itertools
 import math
-import pandas as pd
 
-# ==========================================
-# 1. LOGIC XỬ LÝ TOÁN HỌC
-# ==========================================
+# --- CẤU HÌNH TRANG ---
+st.set_page_config(page_title="Unique Math Solver", page_icon="🧩", layout="wide")
 
-def get_number_variants(numbers, use_sqrt):
-    """
-    Tạo biến thể cho từng số.
-    - Nếu use_sqrt = True: Tạo thêm biến thể căn bậc 2 (nếu n > 0).
-    """
-    variants = []
-    for n in numbers:
-        vars_for_n = []
-        # 1. Dạng nguyên bản
-        vars_for_n.append((n, str(n), str(n))) 
-        
-        # 2. Dạng căn bậc 2 (Áp dụng cho mọi số dương)
-        if use_sqrt and n > 0:
-            val = math.sqrt(n)
-            # Lưu ý: Python hiển thị số thực, ta dùng f-string format để xử lý sau
-            vars_for_n.append((val, f"√{n}", f"math.sqrt({n})"))
-        
-        variants.append(vars_for_n)
-    return variants
+# --- DANH SÁCH MẪU CÂU (TEMPLATES) ---
+# Format: {0}..{4} là số, {5}..{8} là phép tính
+TEMPLATE_NO_BRACKET = ["{0}{5}{1}{6}{2}{7}{3}{8}{4}"]
+TEMPLATES_WITH_BRACKET = [
+    "({0}{5}{1}){6}{2}{7}{3}{8}{4}",
+    "{0}{5}({1}{6}{2}){7}{3}{8}{4}",
+    "{0}{5}{1}{6}({2}{7}{3}){8}{4}",
+    "{0}{5}{1}{6}{2}{7}({3}{8}{4})",
+    "({0}{5}{1}{6}{2}){7}{3}{8}{4}",
+    "{0}{5}({1}{6}{2}{7}{3}){8}{4}",
+    "{0}{5}{1}{6}({2}{7}{3}{8}{4})",
+    "(({0}{5}{1}){6}{2}){7}{3}{8}{4}",
+    "({0}{5}({1}{6}{2})){7}{3}{8}{4}",
+    "{0}{5}(({1}{6}{2}){7}{3}){8}{4}",
+    "{0}{5}({1}{6}({2}{7}{3})){8}{4}",
+    "({0}{5}{1}){6}({2}{7}{3}){8}{4}",
+    "(({0}{5}{1}){6}{2}{7}{3}){8}{4}",
+    "({0}{5}{1}){6}{2}{7}({3}{8}{4})",
+    "(({0}{5}{1}){6}({2}{7}{3})){8}{4}",
+    "{0}{5}(({1}{6}{2}){7}({3}{8}{4}))",
+]
 
-def solve_expression(numbers, allowed_binary_ops, use_sqrt, use_brackets):
-    results = []
-    seen_formulas = set() # Set giúp loại bỏ công thức trùng lặp ngay khi tìm kiếm
+# --- HÀM XỬ LÝ TOÁN HỌC ---
+def solve_math_unique_ops(numbers, targets, tolerance, use_brackets):
+    solutions = []
     
-    number_variants = get_number_variants(numbers, use_sqrt)
-    ops_display = {'+': '+', '-': '-', '*': 'x', '/': ':', '**': '^'}
+    # Pool phép tính: 5 phép tính cơ bản
+    # Lưu ý: ^ đại diện cho lũy thừa (và căn nếu số mũ là nghịch đảo)
+    ops_pool = ['+', '-', '*', '/', '^']
     
-    # Giới hạn vòng lặp an toàn
-    count = 0
-    MAX_ITERATIONS = 2000000 
-    
-    for perm in itertools.permutations(number_variants):
-        for nums_chosen in itertools.product(*perm):
-            vals = [x[0] for x in nums_chosen]
-            disps = [x[1] for x in nums_chosen]
-            calcs = [x[2] for x in nums_chosen]
-            
-            n = len(vals)
-            
-            # Nếu user chọn bắt buộc dùng căn, ta có thể check nhanh ở đây để skip
-            # Nếu trong disps không có chữ '√' nào và use_sqrt=True -> Skip luôn cho nhanh?
-            # Tuy nhiên, để logic lọc ở cuối cho an toàn và linh hoạt.
-            
-            for ops in itertools.product(allowed_binary_ops, repeat=n-1):
-                count += 1
-                if count > MAX_ITERATIONS: return results
+    # 1. SINH HOÁN VỊ SỐ (Permutations of Numbers)
+    # 5 con số -> 120 trường hợp
+    num_perms = list(itertools.permutations(numbers))
 
-                templates = []
-                if n == 5:
-                    A, B, C, D, E = calcs
-                    dA, dB, dC, dD, dE = disps
-                    o1, o2, o3, o4 = ops
-                    d1, d2, d3, d4 = [ops_display[o] for o in ops]
+    # 2. SINH HOÁN VỊ PHÉP TÍNH (Permutations of Operators)
+    # YÊU CẦU CỦA BẠN: "Các phép tính chỉ được sử dụng 1 lần"
+    # -> Ta lấy hoán vị (permutations) chập 4 từ 5 phép tính.
+    # -> Điều này đảm bảo trong 1 bộ 4 phép tính, KHÔNG bao giờ có phép trùng.
+    # Ví dụ: ('+', '-', '*', '/') hoặc ('^', '/', '+', '-')
+    op_perms = list(itertools.permutations(ops_pool, 4))
+
+    # Chọn templates
+    active_patterns = TEMPLATE_NO_BRACKET[:]
+    if use_brackets:
+        active_patterns += TEMPLATES_WITH_BRACKET
+
+    # Cache cho các biểu thức đã tính để tránh trùng lặp string hiển thị
+    seen_expr_string = set()
+
+    for n_p in num_perms:
+        for o_p in op_perms:
+            # Tạo bộ phép tính cho Python (thay ^ bằng **)
+            py_ops = [o.replace('^', '**') for o in o_p]
+            display_ops = o_p
+            
+            # Gộp data để fill vào template
+            fill_data_py = list(n_p) + list(py_ops)
+            fill_data_disp = list(n_p) + list(display_ops)
+
+            for pattern in active_patterns:
+                # Tạo chuỗi hiển thị trước để check trùng
+                try:
+                    expr_disp = pattern.format(*fill_data_disp)
+                except IndexError: continue # Phòng hờ lỗi format
+
+                if expr_disp in seen_expr_string:
+                    continue
+                seen_expr_string.add(expr_disp)
+
+                # Tạo chuỗi tính toán
+                expr_py = pattern.format(*fill_data_py)
+
+                try:
+                    # Eval an toàn
+                    val = eval(expr_py)
                     
-                    # Mẫu KHÔNG ngoặc
-                    templates.append((
-                        f"{A}{o1}{B}{o2}{C}{o3}{D}{o4}{E}", 
-                        f"{dA} {d1} {dB} {d2} {dC} {d3} {dD} {d4} {dE}"
-                    ))
+                    # Bỏ qua số phức (do căn bậc chẵn của số âm)
+                    if isinstance(val, complex): continue
                     
-                    # Mẫu CÓ ngoặc
-                    if use_brackets:
-                        templates.append((f"({A}{o1}{B}){o2}{C}{o3}{D}{o4}{E}", f"({dA} {d1} {dB}) {d2} {dC} {d3} {dD} {d4} {dE}"))
-                        templates.append((f"{A}{o1}({B}{o2}{C}){o3}{D}{o4}{E}", f"{dA} {d1} ({dB} {d2} {dC}) {d3} {dD} {d4} {dE}"))
-                        templates.append((f"{A}{o1}{B}{o2}({C}{o3}{D}){o4}{E}", f"{dA} {d1} {dB} {d2} ({dC} {d3} {dD}) {d4} {dE}"))
-                        templates.append((f"{A}{o1}{B}{o2}{C}{o3}({D}{o4}{E})", f"{dA} {d1} {dB} {d2} {dC} {d3} ({dD} {d4} {dE})"))
+                    # Bỏ qua vô cực hoặc NaN
+                    if math.isinf(val) or math.isnan(val): continue
 
-                for calc_str, disp_str in templates:
-                    # Kiểm tra trùng lặp công thức
-                    if disp_str in seen_formulas: continue
-                    
-                    try:
-                        if "**" in calc_str and len(calc_str) > 60: continue
-                        
-                        res = eval(calc_str)
-                        
-                        if isinstance(res, (int, float)) and not math.isinf(res) and abs(res) < 1000000:
-                            results.append({'val': res, 'expr': disp_str})
-                            seen_formulas.add(disp_str)
-                    except:
-                        continue
-    return results
+                    # Kiểm tra so với Target (1 hoặc 20)
+                    for t in targets:
+                        diff = abs(val - t)
+                        if diff <= tolerance:
+                            solutions.append({
+                                'val': val,
+                                'expr': expr_disp,
+                                'diff': diff,
+                                'target': t
+                            })
+                except (ZeroDivisionError, OverflowError, ValueError):
+                    continue
 
-# ==========================================
-# 2. GIAO DIỆN STREAMLIT
-# ==========================================
+    return solutions
 
-def main():
-    st.set_page_config(page_title="Math Solver Pro", page_icon="🧩", layout="wide")
+# --- GIAO DIỆN STREAMLIT ---
+st.title("🧩 Math Solver: Độc Nhất & Chính Xác")
+st.markdown("""
+Công cụ tìm biểu thức tạo ra số **1** hoặc **20** từ 5 số nhập vào.
+* **Quy tắc:** Mỗi phép tính `+ - * / ^` chỉ được dùng tối đa 1 lần trong mỗi dòng.
+* **Kết quả:** Đã lọc trùng lặp giá trị.
+""")
+
+with st.sidebar:
+    st.header("1. Nhập liệu")
+    nums_in = st.text_input("Nhập 5 số (cách nhau bởi dấu cách)", "5 5 5 5 5")
     
-    st.title("🧩 Math Solver Pro")
-    st.markdown("Tìm các công thức tạo ra kết quả **Gần 1** và **Gần 20** từ 5 số bất kỳ.")
+    st.divider()
+    st.header("2. Tùy chọn")
+    use_brackets = st.checkbox("Dùng Ngoặc ( )", value=True)
+    tolerance = st.slider("Sai số cho phép (+/-)", 0.0, 2.0, 0.0, 0.01, format="%.2f")
     
-    with st.expander("⚙️ Cấu hình", expanded=True):
-        col1, col2 = st.columns(2)
-        with col1:
-            input_str = st.text_input("Nhập 5 số (cách nhau dấu phẩy)", value="5, 2, 3, 1, 4")
-            # Checkbox này giờ mang ý nghĩa BẮT BUỘC
-            use_sqrt = st.checkbox("✅ Bắt buộc dùng Căn bậc 2 (√)", value=True, help="Nếu tích vào đây, chỉ hiện các kết quả có chứa dấu căn.")
+    st.markdown("---")
+    run_btn = st.button("🚀 Tìm Kiếm", type="primary", use_container_width=True)
+
+# --- XỬ LÝ KHI ẤN NÚT ---
+if run_btn:
+    # 1. Parse Input
+    try:
+        # Hỗ trợ nhập số thập phân hoặc phân số (đơn giản)
+        clean_nums_str = nums_in.replace(',', ' ').split()
+        if len(clean_nums_str) != 5:
+            st.error("⚠️ Vui lòng nhập đúng 5 con số.")
+            st.stop()
             
-        with col2:
-            ops_selected = st.multiselect(
-                "Phép tính nối:",
-                ['+', '-', '*', '/', '**'],
-                default=['+', '-', '*', '/'],
-                format_func=lambda x: {'+':'Cộng (+)', '-':'Trừ (-)', '*':'Nhân (x)', '/':'Chia (:)', '**':'Mũ (^)'}[x]
-            )
-            use_brackets = st.checkbox("Dùng Ngoặc ()", value=False)
-
-    run_btn = st.button("🚀 Tính toán", type="primary", use_container_width=True)
-
-    if run_btn:
-        try:
-            numbers = [int(x.strip()) for x in input_str.split(',') if x.strip().isdigit()]
-        except:
-            st.error("Lỗi: Chỉ nhập số nguyên.")
-            return
-
-        if len(numbers) != 5:
-            st.warning("Nên nhập đúng 5 số để có kết quả tốt nhất.")
+        nums = []
+        for x in clean_nums_str:
+            f_val = float(x)
+            # Nếu là số nguyên (ví dụ 5.0) thì chuyển về int cho đẹp, còn lại giữ float
+            nums.append(int(f_val) if f_val.is_integer() else f_val)
             
-        if not ops_selected:
-            st.error("Chưa chọn phép tính nào.")
-            return
+    except ValueError:
+        st.error("⚠️ Định dạng số không hợp lệ.")
+        st.stop()
 
-        with st.spinner("Đang tìm kiếm giải pháp..."):
-            all_results = solve_expression(numbers, ops_selected, use_sqrt, use_brackets)
+    # 2. Run Solver
+    with st.spinner("Đang tính toán các hoán vị..."):
+        # Target cố định là 1 và 20 theo context
+        results = solve_math_unique_ops(nums, [1, 20], tolerance, use_brackets)
+
+    if not results:
+        st.warning("Không tìm thấy kết quả nào phù hợp với sai số này.")
+    else:
+        # 3. Hiển thị kết quả (Logic của bạn)
+        c1, c2 = st.columns(2)
+
+        def render_column(target_val, col_obj):
+            # Lọc các kết quả thuộc target này
+            subset = [r for r in results if r['target'] == target_val]
             
-            if not all_results:
-                st.warning("Không tìm thấy kết quả nào.")
+            # Sắp xếp: Ưu tiên sai số thấp nhất (gần đúng nhất)
+            subset.sort(key=lambda x: x['diff'])
+
+            # --- THUẬT TOÁN LỌC GIÁ TRỊ TRÙNG (QUAN TRỌNG) ---
+            unique_report = []
+            seen_values = set()
+            
+            for item in subset:
+                # Làm tròn 5 số lẻ để so sánh tính độc nhất
+                # Ví dụ: 19.999999 và 20.000001 có thể coi là khác nhau nếu muốn chi tiết,
+                # hoặc làm tròn lỏng hơn nếu muốn gọn. Ở đây để 5 số.
+                val_check = round(item['val'], 5)
+                
+                if val_check not in seen_values:
+                    unique_report.append(item)
+                    seen_values.add(val_check)
+                
+                # Giới hạn hiển thị 10 kết quả ĐỘC NHẤT
+                if len(unique_report) >= 10:
+                    break
+            
+            # Render UI
+            col_obj.subheader(f"Mục tiêu: {target_val}")
+            if not unique_report:
+                col_obj.caption("Không tìm thấy.")
                 return
 
-            # Chuyển thành DataFrame
-            df = pd.DataFrame(all_results)
+            for item in unique_report:
+                # Logic màu sắc
+                if item['diff'] < 1e-9: # Rất chính xác
+                    color = "#198754" # Green
+                    bg = "#e8f5e9"
+                    label = "Chính xác"
+                else:
+                    color = "#fd7e14" # Orange
+                    bg = "#fff3cd"
+                    label = "Gần đúng"
 
-            # --- LOGIC MỚI: BẮT BUỘC DÙNG CĂN ---
-            if use_sqrt:
-                # Lọc chỉ giữ lại dòng nào cột 'expr' có chứa ký tự '√'
-                df = df[df['expr'].str.contains("√")]
-                if df.empty:
-                    st.error("Không tìm thấy kết quả nào thỏa mãn điều kiện 'Bắt buộc dùng Căn bậc 2' để ra gần 1 hoặc 20.")
-                    return
+                col_obj.markdown(f"""
+                <div style="background:{bg}; padding:12px; border-radius:8px; margin-bottom:10px; border-left:5px solid {color}; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                    <div style="font-family:'Courier New', monospace; font-size:1.1em; color:#212529; font-weight:bold; letter-spacing: 0.5px;">
+                        {item['expr']}
+                    </div>
+                    <div style="display:flex; justify-content:space-between; margin-top:8px; align-items:center; border-top:1px solid rgba(0,0,0,0.05); padding-top:4px;">
+                        <span style="font-size:1.2em; color:{color}; font-weight:bold">
+                            = {item['val']:.5g}
+                        </span>
+                        <span style="font-size:0.75em; color:#555; background:#fff; padding:2px 8px; border-radius:10px; border:1px solid #ddd">
+                            {label} (Lệch {item['diff']:.4f})
+                        </span>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
 
-            # Tính độ lệch
-            df['diff_1'] = abs(df['val'] - 1)
-            df['diff_20'] = abs(df['val'] - 20)
-
-            # --- LỌC KẾT QUẢ KHÁC NHAU ---
-            # drop_duplicates(['expr']) đảm bảo mỗi công thức chỉ hiện 1 lần
-            # head(15) lấy 15 kết quả tốt nhất
-            df_target_1 = df.sort_values('diff_1').drop_duplicates(subset=['expr']).head(15)
-            df_target_20 = df.sort_values('diff_20').drop_duplicates(subset=['expr']).head(15)
-
-            st.divider()
-            c1, c2 = st.columns(2)
-            
-            # Hàm hiển thị con
-            def display_results(dataframe, target_val):
-                if dataframe.empty:
-                    st.write("Không có kết quả phù hợp.")
-                    return
-                
-                count_shown = 0
-                for _, row in dataframe.iterrows():
-                    val = row['val']
-                    expr = row['expr']
-                    # Tính lại diff để color
-                    diff = abs(val - target_val)
-                    
-                    # Format số
-                    val_str = f"{val:.5f}".rstrip('0').rstrip('.')
-                    
-                    # Hiển thị
-                    if diff < 1e-9:
-                        st.success(f"**{expr} = {val_str}**")
-                    elif diff < 0.5:
-                        st.info(f"{expr} = {val_str}")
-                    else:
-                        st.write(f"{expr} = {val_str}")
-                    
-                    count_shown += 1
-            
-            with c1:
-                st.subheader("🎯 Gần 1 (Top 15)")
-                display_results(df_target_1, 1)
-
-            with c2:
-                st.subheader("🎯 Gần 20 (Top 15)")
-                display_results(df_target_20, 20)
-
-if __name__ == "__main__":
-    main()
+        with c1: render_column(1, c1)
+        with c2: render_column(20, c2)
