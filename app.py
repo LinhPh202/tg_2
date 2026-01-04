@@ -1,187 +1,186 @@
 import streamlit as st
 import math
-import itertools
+from collections import Counter
 
 # Cấu hình trang
-st.set_page_config(page_title="Solver Toán Học", page_icon="🧩")
+st.set_page_config(page_title="Solver: Cố định phép tính", page_icon="🧩")
 
-# --- HÀM TÍNH TOÁN CỐT LÕI ---
-def get_ops(allow_add, allow_sub, allow_mul, allow_div, allow_pow, allow_sqrt):
-    """Tạo danh sách các phép toán được phép sử dụng"""
-    ops = []
-    if allow_add: ops.append('+')
-    if allow_sub: ops.append('-')
-    if allow_mul: ops.append('*')
-    if allow_div: ops.append('/')
-    if allow_pow: ops.append('^')
-    # sqrt được xử lý riêng như một phép toán 1 ngôi (unary)
-    return ops
-
-def calculate(a, b, op):
-    """Thực hiện phép tính an toàn giữa 2 số"""
+# --- HÀM TÍNH TOÁN ---
+def calculate_binary(a, b, op):
     try:
         if op == '+': return a + b
         if op == '-': return a - b
         if op == '*': return a * b
-        if op == '/': 
-            return a / b if b != 0 else None
+        if op == '/': return a / b if b != 0 else None
         if op == '^':
-            # Giới hạn mũ để tránh treo máy hoặc số quá lớn
-            if abs(a) > 100 or abs(b) > 10: return None 
-            if a == 0 and b <= 0: return None
-            # Tránh số phức
+            if abs(a) > 50 or abs(b) > 6: return None # Giới hạn mũ
             if a < 0 and int(b) != b: return None
             return math.pow(a, b)
-    except:
-        return None
+    except: return None
     return None
 
-def solve_numbers(nums, ops, allow_sqrt, target_1=1, target_2=20, tolerance=0.5):
-    """
-    Thuật toán đệ quy tìm kiếm mọi khả năng.
-    nums: Danh sách các số (kèm chuỗi biểu thức biểu diễn nó)
-    """
+def calculate_unary(a, op):
+    try:
+        if op == 'sqrt':
+            return math.sqrt(a) if a >= 0 else None
+        if op == '!':
+            if 0 <= a <= 10 and abs(a - round(a)) < 1e-5:
+                return math.factorial(int(round(a)))
+    except: return None
+    return None
+
+# --- THUẬT TOÁN GIẢI (BACKTRACKING) ---
+def solve_exact_ops(nums, available_ops, target_1=1, target_2=20, tolerance=0.5):
     results = []
-    
-    # Memoization để tránh tính trùng lặp các trạng thái giống nhau
     seen_states = set()
 
-    def recursive_solve(current_list):
-        # Tạo key đại diện cho trạng thái hiện tại (sắp xếp để tránh trùng hoán vị)
-        # Chỉ lấy giá trị số để check duplicate state
-        state_key = tuple(sorted([x[0] for x in current_list]))
-        if state_key in seen_states:
-            return
+    def recursive_solve(current_nums, current_ops):
+        # 1. Tối ưu: Memoization để tránh tính lại các trường hợp trùng
+        # Key gồm: (các số hiện tại đã sort, các phép tính còn lại đã sort)
+        current_nums_sig = tuple(sorted([round(x[0], 5) for x in current_nums]))
+        current_ops_sig = tuple(sorted(current_ops))
+        state_key = (current_nums_sig, current_ops_sig)
+        
+        if state_key in seen_states: return
         seen_states.add(state_key)
 
-        # 1. Kiểm tra kết quả nếu chỉ còn 1 số
-        if len(current_list) == 1:
-            val, expr = current_list[0]
-            
-            # Kiểm tra Target 1
-            if val != target_1 and abs(val - target_1) < tolerance:
-                results.append({'val': val, 'expr': expr, 'target': target_1, 'diff': abs(val - target_1)})
-            
-            # Kiểm tra Target 2
-            if val != target_2 and abs(val - target_2) < tolerance:
-                results.append({'val': val, 'expr': expr, 'target': target_2, 'diff': abs(val - target_2)})
+        # 2. ĐIỀU KIỆN DỪNG: Hết phép tính
+        if not current_ops:
+            if len(current_nums) == 1:
+                val, expr = current_nums[0]
+                # Check Target 1
+                if val != target_1 and abs(val - target_1) < tolerance:
+                    results.append({'val': val, 'expr': expr, 'target': target_1, 'diff': abs(val - target_1)})
+                # Check Target 2
+                if val != target_2 and abs(val - target_2) < tolerance:
+                    results.append({'val': val, 'expr': expr, 'target': target_2, 'diff': abs(val - target_2)})
             return
 
-        # 2. Thử phép tính Căn bậc 2 (Unary) - Chỉ áp dụng nếu được chọn
-        if allow_sqrt:
-            for i in range(len(current_list)):
-                val, expr = current_list[i]
-                # Chỉ căn nếu số dương và chưa bị căn quá nhiều (để tránh loop)
-                if val > 0 and "sqrt" not in expr: 
-                    new_val = math.sqrt(val)
-                    new_expr = f"sqrt({expr})"
+        # 3. CHECK LOGIC SỐ LƯỢNG
+        # Nếu số lượng phép tính 2 ngôi còn lại < số lượng số - 1 -> Không thể giải hết số -> Cắt nhánh
+        binary_left = sum(1 for op in current_ops if op in ['+', '-', '*', '/', '^'])
+        if binary_left < len(current_nums) - 1:
+            return
+
+        # 4. THỬ CÁC PHÉP TÍNH TRONG KHO (available_ops)
+        # Lấy danh sách các phép tính ĐỘC NHẤT hiện có để tránh lặp (VD: có 2 dấu +, chỉ cần thử 1 lần)
+        unique_ops = set(current_ops)
+        
+        for op in unique_ops:
+            # Tạo danh sách ops mới (bỏ đi 1 op vừa chọn)
+            # Lưu ý: Chỉ remove 1 instance đầu tiên tìm thấy
+            next_ops = list(current_ops)
+            next_ops.remove(op)
+            
+            # --- TRƯỜNG HỢP A: PHÉP TÍNH 2 NGÔI (+, -, *, /, ^) ---
+            if op in ['+', '-', '*', '/', '^']:
+                # Cần ít nhất 2 số để tính
+                if len(current_nums) >= 2:
+                    # Thử ghép mọi cặp số
+                    for i in range(len(current_nums)):
+                        for j in range(len(current_nums)):
+                            if i == j: continue
+                            
+                            val1, expr1 = current_nums[i]
+                            val2, expr2 = current_nums[j]
+                            
+                            # Tính toán
+                            res = calculate_binary(val1, val2, op)
+                            if res is not None:
+                                new_expr = f"({expr1} {op} {expr2})"
+                                # Tạo list số mới
+                                next_nums = [x for k, x in enumerate(current_nums) if k != i and k != j]
+                                next_nums.append((res, new_expr))
+                                
+                                recursive_solve(next_nums, next_ops)
+
+            # --- TRƯỜNG HỢP B: PHÉP TÍNH 1 NGÔI (sqrt, !) ---
+            elif op in ['sqrt', '!']:
+                # Thử áp dụng lên từng số
+                for i in range(len(current_nums)):
+                    val, expr = current_nums[i]
                     
-                    # Tạo list mới với số đã được căn
-                    new_list = current_list[:i] + [(new_val, new_expr)] + current_list[i+1:]
-                    recursive_solve(new_list)
-
-        # 3. Thử phép tính 2 ngôi (+, -, *, /, ^)
-        # Chọn 2 số bất kỳ trong list hiện tại
-        for i in range(len(current_list)):
-            for j in range(len(current_list)):
-                if i == j: continue # Không chọn cùng 1 số
-                
-                val1, expr1 = current_list[i]
-                val2, expr2 = current_list[j]
-
-                # Thử tất cả phép tính đã chọn
-                for op in ops:
-                    res = calculate(val1, val2, op)
+                    res = calculate_unary(val, op)
                     if res is not None:
-                        # Tạo biểu thức mới có ngoặc
-                        new_expr = f"({expr1} {op} {expr2})"
+                        # Format hiển thị
+                        if op == 'sqrt': new_expr = f"sqrt({expr})"
+                        else: new_expr = f"({expr}!)"
                         
-                        # Tạo list mới: Bỏ 2 số cũ, thêm số mới vào
-                        # Lưu ý: cần xử lý index cẩn thận khi remove
-                        remain = [x for k, x in enumerate(current_list) if k != i and k != j]
-                        remain.append((res, new_expr))
+                        # Tạo list số mới (thay thế số cũ bằng số mới)
+                        next_nums = current_nums[:i] + [(res, new_expr)] + current_nums[i+1:]
                         
-                        recursive_solve(remain)
+                        recursive_solve(next_nums, next_ops)
 
-    # Bắt đầu đệ quy: Input ban đầu là list các tuple (giá trị, "chuỗi hiển thị")
-    initial_list = [(x, str(x)) for x in nums]
-    recursive_solve(initial_list)
+    # Bắt đầu chạy
+    initial_nums = [(x, str(x)) for x in nums]
+    recursive_solve(initial_nums, available_ops)
     return results
 
 # --- GIAO DIỆN STREAMLIT ---
-st.title("🧩 Solver: Tìm số gần 1 hoặc 20")
-st.markdown("Nhập 5 số và chọn các phép tính. Máy sẽ tự tìm cách ghép (có dùng ngoặc) để ra kết quả.")
+st.title("🧩 Solver: Xếp hình Toán học")
+st.markdown("""
+Bạn cung cấp số và các mảnh ghép phép tính. Máy tính sẽ tìm cách sắp xếp để **dùng hết** các phép tính đó.
+""")
 
-# Input 5 số
-col_input, col_ops = st.columns([1, 1])
+col1, col2 = st.columns(2)
+with col1:
+    input_nums = st.text_input("1. Nhập các số (cách nhau dấu phẩy):", "5, 5, 5, 5, 5")
+with col2:
+    input_ops = st.text_input("2. Nhập các phép tính muốn dùng:", "+, +, -, /, sqrt")
+    st.caption("Hỗ trợ: `+, -, *, /, ^` (mũ), `sqrt`, `!` (giai thừa)")
 
-with col_input:
-    st.subheader("Nhập liệu")
-    input_str = st.text_input("Nhập 5 số (cách nhau bởi dấu phẩy):", "3, 5, 2, 8, 4")
-    
-with col_ops:
-    st.subheader("Chọn phép tính được dùng")
-    c1, c2, c3 = st.columns(3)
-    use_add = c1.checkbox("Cộng (+)", value=True)
-    use_sub = c2.checkbox("Trừ (-)", value=True)
-    use_mul = c3.checkbox("Nhân (*)", value=True)
-    
-    c4, c5, c6 = st.columns(3)
-    use_div = c4.checkbox("Chia (/)", value=True)
-    use_pow = c5.checkbox("Mũ (^)", value=False) # Mặc định tắt vì dễ ra số ảo
-    use_sqrt = c6.checkbox("Căn (sqrt)", value=False)
-
-if st.button("🔍 Tìm kiếm giải pháp"):
+if st.button("🚀 Giải bài toán"):
     try:
-        # Xử lý input đầu vào
-        nums = [float(x.strip()) for x in input_str.split(',') if x.strip() != '']
-        if len(nums) > 6:
-            st.warning("⚠️ Nhập quá nhiều số sẽ làm máy tính chạy rất chậm! Khuyên dùng tối đa 5 số.")
+        # Xử lý dữ liệu đầu vào
+        nums = [float(x.strip()) for x in input_nums.split(',') if x.strip() != '']
+        ops = [x.strip().lower() for x in input_ops.split(',') if x.strip() != '']
         
-        ops = get_ops(use_add, use_sub, use_mul, use_div, use_pow, use_sqrt)
+        # --- VALIDATION (Kiểm tra điều kiện tiên quyết) ---
+        binary_ops = [op for op in ops if op in ['+', '-', '*', '/', '^']]
+        unary_ops = [op for op in ops if op in ['sqrt', '!']]
         
-        with st.spinner('Đang tính toán hàng nghìn khả năng...'):
-            # Gọi hàm giải
-            found_solutions = solve_numbers(nums, ops, use_sqrt, target_1=1, target_2=20, tolerance=2.0)
-            
-            # Lọc và hiển thị kết quả
-            if not found_solutions:
-                st.error("Không tìm thấy kết quả nào gần 1 hoặc 20 với các số này.")
-            else:
-                # Sắp xếp theo độ lệch (diff) tăng dần -> Số gần nhất lên đầu
-                found_solutions.sort(key=lambda x: x['diff'])
+        required_binary = len(nums) - 1
+        
+        # Logic kiểm tra: Để nối N số thành 1 số cuối cùng, cần đúng N-1 phép tính nối (2 ngôi)
+        # Phép tính 1 ngôi (sqrt, !) không làm giảm số lượng số, nên không ảnh hưởng count này.
+        if len(binary_ops) != required_binary:
+            st.error(f"""
+            ❌ **Lỗi Logic:** Bạn nhập {len(nums)} số, nên bắt buộc phải dùng đúng {required_binary} phép tính 2 ngôi (+, -, *, /, ^).
+            \nHiện tại bạn đang nhập {len(binary_ops)} phép tính 2 ngôi ({', '.join(binary_ops)}).
+            \n(Lưu ý: `sqrt` và `!` không tính vào điều kiện ghép nối này).
+            """)
+        else:
+            with st.spinner('Đang thử mọi cách sắp xếp...'):
+                solutions = solve_exact_ops(nums, ops, target_1=1, target_2=20, tolerance=1.5)
                 
-                # Loại bỏ các kết quả trùng lặp về biểu thức
-                unique_solutions = []
-                seen_exprs = set()
-                for sol in found_solutions:
-                    if sol['expr'] not in seen_exprs:
-                        unique_solutions.append(sol)
-                        seen_exprs.add(sol['expr'])
+                if not solutions:
+                    st.warning("Không tìm thấy cách sắp xếp nào thỏa mãn yêu cầu (Gần 1 hoặc 20).")
+                else:
+                    # Lọc kết quả trùng biểu thức
+                    unique_sols = []
+                    seen = set()
+                    for s in solutions:
+                        if s['expr'] not in seen:
+                            unique_sols.append(s)
+                            seen.add(s['expr'])
+                    
+                    # Sắp xếp theo sai số thấp nhất
+                    unique_sols.sort(key=lambda x: x['diff'])
 
-                # Chia làm 2 nhóm hiển thị
-                st.write("---")
-                col_res1, col_res2 = st.columns(2)
-                
-                with col_res1:
-                    st.success("🎯 Kết quả gần 1 nhất")
-                    count = 0
-                    for s in unique_solutions:
-                        if s['target'] == 1:
-                            st.code(f"{s['expr']} \n= {s['val']:.5f}")
-                            count += 1
-                            if count >= 5: break # Chỉ hiện top 5
-                    if count == 0: st.write("Không tìm thấy.")
+                    st.success(f"Tìm thấy {len(unique_sols)} cách sắp xếp!")
+                    
+                    c_res1, c_res2 = st.columns(2)
+                    with c_res1:
+                        st.info("🎯 Kết quả gần 1")
+                        for s in unique_sols:
+                            if s['target'] == 1:
+                                st.code(f"{s['expr']} \n= {s['val']:.5f}")
+                    
+                    with c_res2:
+                        st.info("🎯 Kết quả gần 20")
+                        for s in unique_sols:
+                            if s['target'] == 20:
+                                st.code(f"{s['expr']} \n= {s['val']:.5f}")
 
-                with col_res2:
-                    st.warning("🎯 Kết quả gần 20 nhất")
-                    count = 0
-                    for s in unique_solutions:
-                        if s['target'] == 20:
-                            st.code(f"{s['expr']} \n= {s['val']:.5f}")
-                            count += 1
-                            if count >= 5: break # Chỉ hiện top 5
-                    if count == 0: st.write("Không tìm thấy.")
-
-    except ValueError:
-        st.error("Lỗi nhập liệu: Vui lòng nhập đúng định dạng số, cách nhau bởi dấu phẩy.")
+    except Exception as e:
+        st.error(f"Lỗi nhập liệu: {e}")
